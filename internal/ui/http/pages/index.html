@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis WS</title>
+</head>
+
+<body>
+    <h1>WebSocket Chat</h1>
+
+    <div id="messages"></div>
+
+    <form onsubmit="sendMessage(event)">
+        <input type="text" id="messageInput" />
+        <button type="submit">Send</button>
+    </form>
+
+    <script>
+        const messagesElement = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const socket = new WebSocket('ws://localhost:8080/v1/chats');
+
+        socket.addEventListener('open', function (event) {
+            console.log('WebSocket connection opened:', event);
+        });
+
+        socket.addEventListener('message', function (event) {
+            console.log('WebSocket message received:', event.data);
+            const messageElement = document.createElement('div');
+            messageElement.textContent = event.data;
+            messagesElement.appendChild(messageElement);
+        });
+
+        socket.addEventListener('close', function (event) {
+            console.log('WebSocket connection closed:', event);
+        });
+
+        socket.addEventListener('error', function (event) {
+            console.error('WebSocket error:', event);
+        });
+
+        function sendMessage(event) {
+            event.preventDefault();
+            const message = messageInput.value;
+            socket.send(message);
+            messageInput.value = '';
+        }
+    </script>
+</body>
+
+</html>
