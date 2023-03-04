@@ -1,6 +1,8 @@
 package websocket
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,7 +15,10 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/redis/go-redis/v9"
 )
+
+var Channel = "chat"
 
 const (
 	// Time allowed to write a message to the peer.
@@ -46,7 +51,7 @@ func read(conn *connHandler, cli *Client) {
 			break
 		}
 
-		cli.broadcast <- wsMsg
+		cli.publish(wsMsg)
 	}
 }
 
@@ -94,7 +99,22 @@ type Client struct {
 	// Capacity of the send channel.
 	// If capacity is 0, the send channel is unbuffered.
 	Capacity uint
+
+	// EXPERIMENTAL
+	pubsub *redis.Client
 }
+
+func (cli *Client) publish(payload *wsutil.Message) {
+	p, _ := json.Marshal(payload)
+	cli.pubsub.Publish(context.TODO(), Channel, string(p))
+}
+
+// func (cli *Client) subscribe() {
+// 	// convert msg to wsutil.Message
+// 	var wsMsg wsutil.Message
+// 	_ = json.Unmarshal([]byte(msg.Payload), &wsMsg)
+// 	return cli.pubsub.Subscribe(context.TODO(), Channel).Channel()
+// }
 
 // Len returns the number of connections.
 func (cli *Client) Len() int {
@@ -113,7 +133,7 @@ func (cli *Client) Close() error {
 		close(cli.broadcast)
 	}()
 
-	cli.broadcast <- &wsutil.Message{OpCode: ws.OpClose, Payload: []byte{}} // broadcast close
+	cli.publish(&wsutil.Message{OpCode: ws.OpClose, Payload: []byte{}}) // publish close
 	return nil
 }
 
@@ -122,7 +142,7 @@ NewClient instantiates a new websocket client.
 
 NOTE: these may be useful to set: Capacity, ReadBufferSize, ReadTimeout, WriteTimeout
 */
-func NewClient(cap uint) *Client {
+func NewClient(cap uint, r *redis.Client) *Client {
 	cli := &Client{
 		register:    make(chan *connHandler),
 		unregister:  make(chan *connHandler),
@@ -133,6 +153,7 @@ func NewClient(cap uint) *Client {
 			// TODO: may be fields here that worth setting
 		},
 		Capacity: cap,
+		pubsub:   r,
 	}
 
 	go cli.listen()
@@ -150,16 +171,21 @@ func (cli *Client) listen() {
 			conn.debug("unregister channel handler")
 			delete(cli.connections, conn)
 			close(conn.send)
-		case msg := <-cli.broadcast:
+		// TODO -- redis subscribe goes here
+		case msg := <-cli.pubsub.Subscribe(context.TODO(), Channel).Channel():
+			// convert msg to wsutil.Message
+			var wsMsg wsutil.Message
+			_ = json.Unmarshal([]byte(msg.Payload), &wsMsg)
+
 			for conn := range cli.connections {
 				select {
-				case conn.send <- msg:
+				case conn.send <- &wsMsg:
 				default:
 					// From Gorilla WS
 					// https://github.com/gorilla/websocket/tree/master/examples/chat#hub
 					// If the client’s send buffer is full, then the hub assumes that the client is dead or stuck. In this case, the hub unregisters the client and closes the websocket
 					conn.debug("conn.send channel buffer possible full\n")
-					conn.debugF("broadcast channel handler: default case:\nopCode: %d\npayload: %+v\n", msg.OpCode, msg.Payload)
+					conn.debugF("broadcast channel handler: default case:\nopCode: %d\npayload: %+v\n", wsMsg.OpCode, wsMsg.Payload)
 					close(conn.send)
 					delete(cli.connections, conn)
 				}
