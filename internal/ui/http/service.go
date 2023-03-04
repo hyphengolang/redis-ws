@@ -1,14 +1,15 @@
 package ws
 
 import (
-	"embed"
+	_ "embed"
+	"html/template"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 )
 
-//go:embed pages
-var pages embed.FS
+//go:embed pages/index.html
+var indexPage string
 
 type Service struct {
 	mux chi.Router
@@ -27,6 +28,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) routes() {
-	fs := http.FileServer(http.FS(pages))
-	s.mux.Handle("/*", fs)
+	tmpl := template.Must(template.New("index").Parse(indexPage))
+
+	s.mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		// Set the WebSocket URL based on the server's address and port
+		webSocketURL := "ws://" + r.Host + "/v1/chats"
+		tmpl.Execute(w, struct{ WebSocketURL string }{webSocketURL})
+	})
 }

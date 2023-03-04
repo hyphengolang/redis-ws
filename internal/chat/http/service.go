@@ -11,13 +11,13 @@ import (
 type Service struct {
 	mux chi.Router
 
-	redis *redis.Client
+	ps *redis.Client
 }
 
 func New(redis *redis.Client) *Service {
 	s := Service{
-		mux:   chi.NewRouter(),
-		redis: redis,
+		mux: chi.NewRouter(),
+		ps:  redis,
 	}
 	s.routes()
 	return &s
@@ -29,5 +29,5 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) routes() {
 	// connect to websocket here
-	s.mux.HandleFunc("/", websocket.NewClient(0, s.redis).ServeHTTP)
+	s.mux.HandleFunc("/", websocket.NewClient(0, s.ps).ServeHTTP)
 }

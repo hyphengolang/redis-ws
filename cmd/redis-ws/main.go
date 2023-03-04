@@ -63,6 +63,7 @@ func newRedisConn(ctx context.Context, addr string) (*redis.Client, error) {
 	return r, r.Ping(ctx).Err()
 }
 
+// baseUrl is needed here
 func newUIService() http.Handler {
 	return uiHTTP.New()
 }
