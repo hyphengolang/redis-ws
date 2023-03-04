@@ -18,7 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var Channel = "chat"
+var CHANNEL = "chat"
 
 const (
 	// Time allowed to write a message to the peer.
@@ -51,7 +51,7 @@ func read(conn *connHandler, cli *Client) {
 			break
 		}
 
-		cli.publish(wsMsg)
+		cli.pubsub.Publish(wsMsg)
 	}
 }
 
@@ -101,19 +101,12 @@ type Client struct {
 	Capacity uint
 
 	// EXPERIMENTAL
-	pubsub *redis.Client
+	pubsub *pubsub
 }
 
-func (cli *Client) publish(payload *wsutil.Message) {
-	p, _ := json.Marshal(payload)
-	cli.pubsub.Publish(context.TODO(), Channel, string(p))
-}
-
-// func (cli *Client) subscribe() {
-// 	// convert msg to wsutil.Message
-// 	var wsMsg wsutil.Message
-// 	_ = json.Unmarshal([]byte(msg.Payload), &wsMsg)
-// 	return cli.pubsub.Subscribe(context.TODO(), Channel).Channel()
+// func (cli *Client) publish(payload *wsutil.Message) {
+// 	p, _ := json.Marshal(payload)
+// 	cli.pubsub.publish(context.TODO(), CHANNEL, string(p))
 // }
 
 // Len returns the number of connections.
@@ -133,8 +126,7 @@ func (cli *Client) Close() error {
 		close(cli.broadcast)
 	}()
 
-	cli.publish(&wsutil.Message{OpCode: ws.OpClose, Payload: []byte{}}) // publish close
-	return nil
+	return cli.pubsub.Publish(&wsutil.Message{OpCode: ws.OpClose, Payload: []byte{}}) // publish close
 }
 
 /*
@@ -153,7 +145,7 @@ func NewClient(cap uint, r *redis.Client) *Client {
 			// TODO: may be fields here that worth setting
 		},
 		Capacity: cap,
-		pubsub:   r,
+		pubsub:   NewPubSub(r, 0),
 	}
 
 	go cli.listen()
@@ -172,14 +164,14 @@ func (cli *Client) listen() {
 			delete(cli.connections, conn)
 			close(conn.send)
 		// TODO -- redis subscribe goes here
-		case msg := <-cli.pubsub.Subscribe(context.TODO(), Channel).Channel():
-			// convert msg to wsutil.Message
-			var wsMsg wsutil.Message
-			_ = json.Unmarshal([]byte(msg.Payload), &wsMsg)
+		case wsMsg := <-cli.pubsub.Subscribe():
+			// // convert msg to wsutil.Message
+			// var wsMsg wsutil.Message
+			// _ = json.Unmarshal([]byte(msg.Payload), &wsMsg)
 
 			for conn := range cli.connections {
 				select {
-				case conn.send <- &wsMsg:
+				case conn.send <- wsMsg:
 				default:
 					// From Gorilla WS
 					// https://github.com/gorilla/websocket/tree/master/examples/chat#hub
@@ -339,4 +331,39 @@ type Broker[K, V any] interface {
 	Store(key K, value V)
 	Delete(key K)
 	LoadAndDelete(key K) (value V, loaded bool)
+}
+
+type pubsub struct {
+	r    *redis.Client
+	send chan *wsutil.Message
+}
+
+func NewPubSub(r *redis.Client, cap int) *pubsub {
+	ps := &pubsub{
+		r:    r,
+		send: make(chan *wsutil.Message, cap),
+	}
+	go func() {
+		for msg := range ps.r.Subscribe(context.Background(), CHANNEL).Channel() {
+			var payload wsutil.Message
+			if err := json.Unmarshal([]byte(msg.Payload), &payload); err != nil {
+				log.Printf("unmarshal: %v", err)
+				continue
+			}
+			ps.send <- &payload
+		}
+	}()
+	return ps
+}
+
+func (ps *pubsub) Publish(payload *wsutil.Message) error {
+	p, err := json.Marshal(&payload)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return ps.r.Publish(context.Background(), CHANNEL, string(p)).Err()
+}
+
+func (ps *pubsub) Subscribe() <-chan *wsutil.Message {
+	return ps.send
 }
