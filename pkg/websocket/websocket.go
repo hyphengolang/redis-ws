@@ -2,7 +2,6 @@ package websocket
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,12 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"redis-ws/pkg/websocket/pubsub"
+
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"github.com/redis/go-redis/v9"
 )
-
-var CHANNEL = "chat"
 
 const (
 	// Time allowed to write a message to the peer.
@@ -43,6 +42,7 @@ func read(conn *connHandler, cli *Client) {
 		return
 	}
 
+	ctx := context.Background()
 	for {
 		wsMsg, err := conn.read()
 		if err != nil {
@@ -51,7 +51,7 @@ func read(conn *connHandler, cli *Client) {
 			break
 		}
 
-		cli.pubsub.Publish(wsMsg)
+		cli.ps.Publish(ctx, wsMsg)
 	}
 }
 
@@ -100,14 +100,8 @@ type Client struct {
 	// If capacity is 0, the send channel is unbuffered.
 	Capacity uint
 
-	// EXPERIMENTAL
-	pubsub *pubsub
+	ps pubsub.PubSub
 }
-
-// func (cli *Client) publish(payload *wsutil.Message) {
-// 	p, _ := json.Marshal(payload)
-// 	cli.pubsub.publish(context.TODO(), CHANNEL, string(p))
-// }
 
 // Len returns the number of connections.
 func (cli *Client) Len() int {
@@ -126,7 +120,25 @@ func (cli *Client) Close() error {
 		close(cli.broadcast)
 	}()
 
-	return cli.pubsub.Publish(&wsutil.Message{OpCode: ws.OpClose, Payload: []byte{}}) // publish close
+	ctx := context.Background()
+	msg := &wsutil.Message{OpCode: ws.OpClose, Payload: []byte{}}
+
+	return cli.ps.Publish(ctx, msg) // publish close
+}
+
+type Option func(*Client)
+
+func WithPubSub(ps pubsub.PubSub) Option {
+	return func(cli *Client) {
+		cli.ps = ps
+	}
+}
+
+func WithRedis(r *redis.Client) Option {
+	return func(cli *Client) {
+		cli.ps = pubsub.NewRedis(context.Background(),
+			r, "CHANNEL")
+	}
 }
 
 /*
@@ -134,7 +146,7 @@ NewClient instantiates a new websocket client.
 
 NOTE: these may be useful to set: Capacity, ReadBufferSize, ReadTimeout, WriteTimeout
 */
-func NewClient(cap uint, r *redis.Client) *Client {
+func NewClient(cap uint, ps pubsub.PubSub) *Client {
 	cli := &Client{
 		register:    make(chan *connHandler),
 		unregister:  make(chan *connHandler),
@@ -145,7 +157,8 @@ func NewClient(cap uint, r *redis.Client) *Client {
 			// TODO: may be fields here that worth setting
 		},
 		Capacity: cap,
-		pubsub:   NewPubSub(r, 0),
+		ps:       ps,
+		// channel:  CHANNEL,
 	}
 
 	go cli.listen()
@@ -153,6 +166,7 @@ func NewClient(cap uint, r *redis.Client) *Client {
 }
 
 func (cli *Client) listen() {
+	ctx := context.Background()
 	for {
 		select {
 		case conn := <-cli.register:
@@ -164,11 +178,7 @@ func (cli *Client) listen() {
 			delete(cli.connections, conn)
 			close(conn.send)
 		// TODO -- redis subscribe goes here
-		case wsMsg := <-cli.pubsub.Subscribe():
-			// // convert msg to wsutil.Message
-			// var wsMsg wsutil.Message
-			// _ = json.Unmarshal([]byte(msg.Payload), &wsMsg)
-
+		case wsMsg := <-cli.ps.Subscribe(ctx):
 			for conn := range cli.connections {
 				select {
 				case conn.send <- wsMsg:
@@ -331,39 +341,4 @@ type Broker[K, V any] interface {
 	Store(key K, value V)
 	Delete(key K)
 	LoadAndDelete(key K) (value V, loaded bool)
-}
-
-type pubsub struct {
-	r    *redis.Client
-	send chan *wsutil.Message
-}
-
-func NewPubSub(r *redis.Client, cap int) *pubsub {
-	ps := &pubsub{
-		r:    r,
-		send: make(chan *wsutil.Message, cap),
-	}
-	go func() {
-		for msg := range ps.r.Subscribe(context.Background(), CHANNEL).Channel() {
-			var payload wsutil.Message
-			if err := json.Unmarshal([]byte(msg.Payload), &payload); err != nil {
-				log.Printf("unmarshal: %v", err)
-				continue
-			}
-			ps.send <- &payload
-		}
-	}()
-	return ps
-}
-
-func (ps *pubsub) Publish(payload *wsutil.Message) error {
-	p, err := json.Marshal(&payload)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	return ps.r.Publish(context.Background(), CHANNEL, string(p)).Err()
-}
-
-func (ps *pubsub) Subscribe() <-chan *wsutil.Message {
-	return ps.send
 }

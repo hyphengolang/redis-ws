@@ -68,6 +68,6 @@ func newUIService() http.Handler {
 	return uiHTTP.New()
 }
 
-func newChatService(r *redis.Client) http.Handler {
-	return chatHTTP.New(r)
+func newChatService(rc *redis.Client) http.Handler {
+	return chatHTTP.New(chatHTTP.WithRedis(rc))
 }
